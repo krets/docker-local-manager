@@ -69,11 +69,57 @@ main {
   justify-content: space-between;
   align-items: center;
   gap: 0.5rem;
+  width: 100%;
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
 }
 
 .card-header h2 {
   margin: 0;
   font-size: 1rem;
+}
+
+.card-title {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+}
+
+.card-title h2 {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chevron {
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+.card-summary {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-shrink: 0;
+}
+
+.summary-text {
+  font-size: 0.75rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.dashboard-summary {
+  color: var(--muted);
+  font-size: 0.8rem;
+  margin: 0 0.1rem 0.2rem;
 }
 
 .badge {

@@ -7,6 +7,8 @@ const state = {
   selectedCommit: new Map(), // name -> hash chosen in the rollback dropdown
   pullFirst: new Set(), // names with "pull first" checked
   rebuildAfter: new Set(), // names with "rebuild after" checked
+  expanded: new Set(), // names showing full detail instead of the one-line summary
+  rollbackOpen: new Set(), // names showing the rollback controls within an expanded card
 };
 
 async function fetchJSON(url, options) {
@@ -34,6 +36,26 @@ function timeAgo(iso) {
   return `${Math.round(hours / 24)}d ago`;
 }
 
+/** One line for the collapsed card -- enough to tell "does this need attention" at a glance. */
+function summaryText(p) {
+  const parts = [];
+  if (p.git) {
+    parts.push(p.git.detached ? `${p.git.hash} (detached)` : p.git.hash);
+    if (p.git.dirty) parts.push('dirty');
+  } else {
+    parts.push('no git');
+  }
+  if (!p.composeFilePresent) {
+    parts.push('no compose file');
+  } else if (p.services.length) {
+    const running = p.services.filter((s) => s.state === 'running').length;
+    parts.push(`${running}/${p.services.length} running`);
+  } else {
+    parts.push('not started');
+  }
+  return parts.join(' · ');
+}
+
 function reasons(p) {
   const out = [];
   if (!p.git) {
@@ -58,14 +80,10 @@ function renderLog(log) {
   return `<div class="log" data-role="log">${lines}</div>${statusLine}`;
 }
 
-function renderCard(p) {
+function renderGitBlock(p) {
   const git = p.git;
   const ab = state.aheadBehind.get(p.name);
-  const log = state.logs.get(p.name);
-  const busy = p.running;
-  const history = state.history.get(p.name);
-
-  const gitBlock = git
+  return git
     ? `<div class="git-line">
         <code>${git.hash}</code> ${escapeHtml(git.message)}
         ${git.detached ? '<span class="tag warn">detached</span>' : `<span class="tag">${escapeHtml(git.branch ?? '')}</span>`}
@@ -73,41 +91,77 @@ function renderCard(p) {
         ${ab ? `<span class="tag">${ab.ahead}↑ ${ab.behind}↓ · checked ${timeAgo(ab.checkedAt)}</span>` : ''}
       </div>`
     : '<div class="git-line">not a git repository</div>';
+}
 
-  const servicesBlock = !p.composeFilePresent
-    ? '<p class="git-line tag warn" style="display:block">No compose file at the current commit — "Return to latest" or pick a different commit.</p>'
-    : p.services.length
-      ? `<table class="services">
-          <thead><tr><th>Service</th><th>Image</th><th>State</th><th>Built</th></tr></thead>
-          <tbody>
-            ${p.services
-              .map(
-                (s) => `<tr>
-                  <td>${escapeHtml(s.service)}</td>
-                  <td>${escapeHtml(s.image)}</td>
-                  <td>${escapeHtml(s.state)}</td>
-                  <td>${timeAgo(s.builtAt)}</td>
-                </tr>`,
-              )
-              .join('')}
-          </tbody>
-        </table>`
-      : '<p class="git-line">No containers created yet.</p>';
+function renderServicesBlock(p) {
+  if (!p.composeFilePresent) {
+    return '<p class="git-line tag warn" style="display:block">No compose file at the current commit — "Return to latest" or pick a different commit.</p>';
+  }
+  if (!p.services.length) {
+    return '<p class="git-line">No containers created yet.</p>';
+  }
+  return `<table class="services">
+      <thead><tr><th>Service</th><th>Image</th><th>State</th><th>Built</th></tr></thead>
+      <tbody>
+        ${p.services
+          .map(
+            (s) => `<tr>
+              <td>${escapeHtml(s.service)}</td>
+              <td>${escapeHtml(s.image)}</td>
+              <td>${escapeHtml(s.state)}</td>
+              <td>${timeAgo(s.builtAt)}</td>
+            </tr>`,
+          )
+          .join('')}
+      </tbody>
+    </table>`;
+}
+
+function renderRollbackSection(p) {
+  const open = state.rollbackOpen.has(p.name);
+  const busy = p.running;
+  const canCheckout = p.git && !p.git.dirty && !busy;
+  const history = state.history.get(p.name);
+
+  if (!open) {
+    return `<div class="actions">
+      <button data-action="toggle-rollback" type="button">Roll back…</button>
+    </div>`;
+  }
+
+  return `<div class="actions">
+      <select data-role="history-select" ${canCheckout ? '' : 'disabled'}>
+        <option value="">${history ? 'Pick a commit to roll back to…' : 'Click to load history…'}</option>
+        ${(history ?? [])
+          .map(
+            (c) =>
+              `<option value="${c.hash}" ${state.selectedCommit.get(p.name) === c.hash ? 'selected' : ''}>${c.hash} ${escapeHtml(
+                truncate(c.message, 50),
+              )}</option>`,
+          )
+          .join('')}
+      </select>
+      <button data-action="checkout" ${canCheckout ? '' : 'disabled'}>Roll back</button>
+      <label class="toggle"><input type="checkbox" data-role="rebuild-after" ${busy ? 'disabled' : ''} ${
+        state.rebuildAfter.has(p.name) ? 'checked' : ''
+      }/> rebuild after</label>
+      <button data-action="toggle-rollback" type="button">Hide</button>
+    </div>`;
+}
+
+function renderCardBody(p) {
+  const git = p.git;
+  const log = state.logs.get(p.name);
+  const busy = p.running;
 
   const canFetch = git && !busy;
   const canPull = git && !git.detached && !git.dirty && !busy;
-  const canCheckout = git && !git.dirty && !busy;
   const canReattach = git?.detached && !busy;
   const hint = reasons(p);
 
   return `
-    <section class="card" data-project="${escapeHtml(p.name)}">
-      <div class="card-header">
-        <h2>${escapeHtml(p.name)}</h2>
-        <span class="badge ${p.rollup}">${p.rollup}</span>
-      </div>
-      ${gitBlock}
-      ${servicesBlock}
+      ${renderGitBlock(p)}
+      ${renderServicesBlock(p)}
       <div class="actions">
         <button data-action="fetch" ${canFetch ? '' : 'disabled'}>Check for Updates</button>
         <button data-action="pull" ${canPull ? '' : 'disabled'}>Pull</button>
@@ -117,34 +171,47 @@ function renderCard(p) {
         }/> pull first</label>
         ${canReattach ? '<button data-action="reattach">Return to latest</button>' : ''}
       </div>
-      <div class="actions">
-        <select data-role="history-select" ${canCheckout ? '' : 'disabled'}>
-          <option value="">${history ? 'Pick a commit to roll back to…' : 'Click to load history…'}</option>
-          ${(history ?? [])
-            .map(
-              (c) =>
-                `<option value="${c.hash}" ${state.selectedCommit.get(p.name) === c.hash ? 'selected' : ''}>${c.hash} ${escapeHtml(
-                  truncate(c.message, 50),
-                )}</option>`,
-            )
-            .join('')}
-        </select>
-        <button data-action="checkout" ${canCheckout ? '' : 'disabled'}>Roll back</button>
-        <label class="toggle"><input type="checkbox" data-role="rebuild-after" ${busy ? 'disabled' : ''} ${
-          state.rebuildAfter.has(p.name) ? 'checked' : ''
-        }/> rebuild after</label>
-      </div>
+      ${renderRollbackSection(p)}
       ${hint.length ? `<p class="git-line">${hint.join(' · ')}</p>` : ''}
       ${log ? renderLog(log) : ''}
+  `;
+}
+
+function renderCard(p) {
+  const expanded = state.expanded.has(p.name);
+
+  return `
+    <section class="card" data-project="${escapeHtml(p.name)}">
+      <button class="card-header" data-action="toggle" type="button">
+        <span class="card-title">
+          <span class="chevron">${expanded ? '▾' : '▸'}</span>
+          <h2>${escapeHtml(p.name)}</h2>
+        </span>
+        <span class="card-summary">
+          ${!expanded ? `<span class="summary-text">${escapeHtml(summaryText(p))}</span>` : ''}
+          <span class="badge ${p.rollup}">${p.rollup}</span>
+        </span>
+      </button>
+      ${expanded ? renderCardBody(p) : ''}
     </section>
   `;
+}
+
+function renderDashboardSummary() {
+  const projects = [...state.projects.values()];
+  if (!projects.length) return '';
+  const counts = { up: 0, partial: 0, down: 0 };
+  for (const p of projects) counts[p.rollup]++;
+  return `<p class="dashboard-summary">${projects.length} projects · ${counts.up} up${
+    counts.partial ? ` · ${counts.partial} partial` : ''
+  }${counts.down ? ` · ${counts.down} down` : ''}</p>`;
 }
 
 function render() {
   const main = document.getElementById('projects');
   const projects = [...state.projects.values()];
   main.innerHTML = projects.length
-    ? projects.map(renderCard).join('')
+    ? renderDashboardSummary() + projects.map(renderCard).join('')
     : '<p class="empty">No projects found under the configured root.</p>';
 }
 
@@ -167,6 +234,7 @@ function closeStream(name) {
 }
 
 function attachStream(name, { onDone } = {}) {
+  state.expanded.add(name); // so the log is visible without the user having to find and expand the card
   closeStream(name);
   const es = new EventSource(`/api/projects/${encodeURIComponent(name)}/stream`);
   const log = { lines: [], status: 'running', exitCode: null, es };
@@ -215,6 +283,17 @@ async function onClick(e) {
   const card = e.target.closest('.card');
   const name = card.dataset.project;
   const action = btn.dataset.action;
+
+  if (action === 'toggle') {
+    state.expanded.has(name) ? state.expanded.delete(name) : state.expanded.add(name);
+    render();
+    return;
+  }
+  if (action === 'toggle-rollback') {
+    state.rollbackOpen.has(name) ? state.rollbackOpen.delete(name) : state.rollbackOpen.add(name);
+    render();
+    return;
+  }
 
   try {
     if (action === 'fetch') {
