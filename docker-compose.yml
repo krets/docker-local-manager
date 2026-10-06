@@ -1,0 +1,18 @@
+services:
+  manager:
+    build: .
+    ports:
+      - "3000:3000"
+    environment:
+      PROJECTS_ROOT: /docker
+      POLL_INTERVAL_MS: 15000
+      OPERATION_TIMEOUT_MS: 600000
+      HISTORY_LIMIT: 20
+    volumes:
+      # Host Docker engine access -- see spec.md's "Host Access Requirements".
+      # This is root-equivalent on the host; only run on a trusted machine,
+      # behind a private network / reverse-proxy auth.
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Root project location scanned for */docker-compose.yml projects.
+      - /docker:/docker
+    restart: unless-stopped
