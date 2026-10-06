@@ -2,7 +2,9 @@ services:
   manager:
     build: .
     ports:
-      - "3000:3000"
+      # Host-side port only -- change the left-hand number if it collides
+      # with something else already running on the Docker host.
+      - "8088:3000"
     environment:
       PROJECTS_ROOT: /docker
       POLL_INTERVAL_MS: 15000
@@ -15,4 +17,9 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
       # Root project location scanned for */docker-compose.yml projects.
       - /docker:/docker
+      # Reuses root's existing SSH key + known_hosts for projects whose git
+      # remote is an SSH URL -- same credentials already used for manual
+      # `git pull` on this host as root. Read-only, but note the container
+      # can therefore use that key for anything, not just git.
+      - /root/.ssh:/root/.ssh:ro
     restart: unless-stopped
