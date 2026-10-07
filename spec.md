@@ -34,7 +34,7 @@ The manager is installed the same way it installs everything else: as a git chec
 
 Because this directory then satisfies the Discovery Rule above, **the manager will list and manage itself** on its own dashboard — "Update Source" pulls its own repo, "Rebuild" rebuilds its own image. This is intentional, not a bug to route around, but it has one sharp edge:
 
-* **Self-rebuild drops the request mid-flight.** Rebuilding the manager's own project recreates the very container handling that HTTP/SSE request, so the log stream cuts off abruptly instead of reporting a clean "success." The rebuild itself still completes normally — refresh the page once the new container is up to confirm.
+* **Self-rebuild drops the request mid-flight, and can wedge the *next* rebuild too.** Rebuilding the manager's own project recreates the very container handling that HTTP/SSE request, so the log stream cuts off abruptly instead of reporting a clean "success." Usually the rebuild still completes normally. But `docker compose up --build` recreates a container by renaming the old one to a temporary name, removing it, then creating the replacement — and if the container gets killed partway through that (because it's the one running the command), the temp-named container can be left behind, uncleaned. The *next* rebuild attempt then fails with a name conflict until that stale container finishes getting cleaned up (a second attempt is usually enough). The dashboard flags the manager's own project with this warning and recommends rebuilding it from the terminal instead (`docker compose up -d --build` from outside the container, which isn't subject to this at all) — see `isSelf` in the API.
 
 ---
 

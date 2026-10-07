@@ -1,17 +1,28 @@
 import { Router } from 'express';
 import path from 'node:path';
-import { access } from 'node:fs/promises';
+import { access, readFile } from 'node:fs/promises';
 import { discoverProjects } from '../services/discovery.js';
 import * as git from '../services/git.js';
 import * as docker from '../services/docker.js';
 import { startOperation, isRunning, subscribeToStream } from '../lib/operations.js';
 import { config } from '../config.js';
+import { selfName } from '../lib/self.js';
 
 async function composeFileExists(project) {
   if (!project.composeFile) return false;
   return access(path.join(project.dir, project.composeFile))
     .then(() => true)
     .catch(() => false);
+}
+
+/** Detects the manager's own project dir by matching its package.json name -- see src/lib/self.js. */
+async function isSelfProject(project) {
+  try {
+    const pkg = JSON.parse(await readFile(path.join(project.dir, 'package.json'), 'utf8'));
+    return pkg.name === selfName;
+  } catch {
+    return false;
+  }
 }
 
 export const router = Router();
@@ -34,9 +45,10 @@ async function findProject(name) {
 }
 
 async function buildProjectStatus(project) {
-  const [gitStatus, composeFilePresent] = await Promise.all([
+  const [gitStatus, composeFilePresent, isSelf] = await Promise.all([
     git.getStatus(project.dir),
     composeFileExists(project),
+    isSelfProject(project),
   ]);
   const services = composeFilePresent ? await docker.getServiceStatus(project.dir, project.composeFile) : [];
 
@@ -44,6 +56,7 @@ async function buildProjectStatus(project) {
     name: project.name,
     git: gitStatus,
     composeFilePresent,
+    isSelf,
     services,
     rollup: docker.rollup(services),
     running: isRunning(project.name),

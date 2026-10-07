@@ -171,6 +171,11 @@ function renderCardBody(p) {
         }/> pull first</label>
         ${canReattach ? '<button data-action="reattach">Return to latest</button>' : ''}
       </div>
+      ${
+        p.isSelf
+          ? '<p class="git-line tag warn" style="display:block">This is the manager\'s own project — rebuilding it here tears down the container handling this request, which can leave a stale container behind if interrupted. Prefer running <code>docker compose up -d --build</code> from the terminal for this one.</p>'
+          : ''
+      }
       ${renderRollbackSection(p)}
       ${hint.length ? `<p class="git-line">${hint.join(' · ')}</p>` : ''}
       ${log ? renderLog(log) : ''}
