@@ -32,7 +32,7 @@ The manager is installed the same way it installs everything else: as a git chec
 2. On the host: `git clone <remote> /docker/docker-local-manager`.
 3. `cd /docker/docker-local-manager && docker compose up -d --build`.
 
-Because this directory then satisfies the Discovery Rule above, **the manager will list and manage itself** on its own dashboard — "Update Source" pulls its own repo, "Rebuild" rebuilds its own image. This is intentional, not a bug to route around, but it has one sharp edge:
+Because this directory then satisfies the Discovery Rule above, **the manager will list and manage itself** on its own dashboard — "Update Source" pulls its own repo, "Rebuild" rebuilds its own image. This is intentional; see below for how the sharp edge of rebuilding yourself is handled.
 
 ### Self-awareness
 The manager identifies its own container (its hostname is the container id, resolved through the docker socket; override with `SELF_CONTAINER`) and its own project (by `package.json` name). When both are found:
