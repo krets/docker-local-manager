@@ -135,6 +135,7 @@ main {
 .badge.up { background: var(--up); }
 .badge.partial { background: var(--partial); }
 .badge.down { background: var(--down); }
+.badge.dismissed { background: var(--muted); }
 
 .git-line {
   margin: 0.5rem 0;

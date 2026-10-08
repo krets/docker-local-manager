@@ -1,3 +1,21 @@
+const EXPANDED_KEY = 'dlm.expanded';
+
+function loadExpanded() {
+  try {
+    return new Set(JSON.parse(localStorage.getItem(EXPANDED_KEY) ?? '[]'));
+  } catch {
+    return new Set();
+  }
+}
+
+function saveExpanded() {
+  try {
+    localStorage.setItem(EXPANDED_KEY, JSON.stringify([...state.expanded]));
+  } catch {
+    /* storage unavailable; expansion just won't survive a reload */
+  }
+}
+
 const state = {
   pollIntervalMs: 15000,
   projects: new Map(), // name -> latest status
@@ -7,7 +25,7 @@ const state = {
   selectedCommit: new Map(), // name -> hash chosen in the rollback dropdown
   pullFirst: new Set(), // names with "pull first" checked
   rebuildAfter: new Set(), // names with "rebuild after" checked
-  expanded: new Set(), // names showing full detail instead of the one-line summary
+  expanded: loadExpanded(), // names showing full detail instead of the one-line summary
   menuOpen: null, // name of the card whose kebab menu is open
   rollbackOpen: new Set(), // names showing the rollback controls within an expanded card
   selfCheckIntervalMs: 300000,
@@ -50,7 +68,6 @@ function summaryText(p) {
   const parts = [];
   if (p.git) {
     parts.push(p.git.detached ? `${p.git.hash} (detached)` : p.git.hash);
-    if (p.git.dirty) parts.push('dirty');
   } else {
     parts.push('no git');
   }
@@ -110,7 +127,7 @@ function renderServicesBlock(p) {
     return '<p class="git-line">No containers created yet.</p>';
   }
   return `<table class="services">
-      <thead><tr><th>Service</th><th>Image</th><th>State</th><th>Built</th></tr></thead>
+      <thead><tr><th>Service</th><th>Image</th><th>State</th><th>Image created</th></tr></thead>
       <tbody>
         ${p.services
           .map(
@@ -126,6 +143,22 @@ function renderServicesBlock(p) {
     </table>`;
 }
 
+/** Why a git/compose action is unavailable, or '' if it's fine. Used for the button tooltip. */
+function disabledReason(p, action) {
+  if (p.running) return 'An operation is already running for this project';
+  const git = p.git;
+  if (action === 'rebuild') return p.composeFilePresent ? '' : 'No compose file at the current commit';
+  if (!git) return 'Not a git repository';
+  if (action === 'fetch') return '';
+  if (action === 'rollback') return git.dirty ? 'Uncommitted changes — commit or discard first' : '';
+  if (git.detached) return 'HEAD is detached — use "Return to latest" first';
+  if (git.dirty) return 'Uncommitted changes — commit or discard first';
+  return '';
+}
+
+/** disabled + title attributes for a button, given the reason it's unavailable. */
+const gate = (reason) => (reason ? `disabled title="${escapeHtml(reason)}"` : '');
+
 function renderRollbackSection(p) {
   const open = state.rollbackOpen.has(p.name);
   const busy = p.running;
@@ -134,7 +167,7 @@ function renderRollbackSection(p) {
 
   if (!open) {
     return `<div class="actions">
-      <button data-action="toggle-rollback" type="button">Roll back…</button>
+      <button data-action="toggle-rollback" type="button" ${gate(disabledReason(p, 'rollback'))}>Roll back…</button>
     </div>`;
   }
 
@@ -163,8 +196,6 @@ function renderCardBody(p) {
   const log = state.logs.get(p.name);
   const busy = p.running;
 
-  const canFetch = git && !busy;
-  const canPull = git && !git.detached && !git.dirty && !busy;
   const canReattach = git?.detached && !busy;
   const hint = reasons(p);
 
@@ -184,9 +215,11 @@ function renderCardBody(p) {
       ${renderGitBlock(p)}
       ${renderServicesBlock(p)}
       <div class="actions">
-        <button data-action="fetch" ${canFetch ? '' : 'disabled'}>Check for Updates</button>
-        <button data-action="pull" ${canPull ? '' : 'disabled'}>Pull</button>
-        <button class="primary" data-action="rebuild" ${busy || !p.composeFilePresent ? 'disabled' : ''}>Rebuild</button>
+        <button data-action="fetch" ${gate(disabledReason(p, 'fetch'))}>Check for Updates</button>
+        <button data-action="pull" ${gate(disabledReason(p, 'pull'))}>Pull</button>
+        <button class="primary" data-action="rebuild" ${gate(disabledReason(p, 'rebuild'))}>${
+          state.pullFirst.has(p.name) ? 'Pull + Rebuild' : 'Rebuild'
+        }</button>
         <label class="toggle"><input type="checkbox" data-role="pull-first" ${busy ? 'disabled' : ''} ${
           state.pullFirst.has(p.name) ? 'checked' : ''
         }/> pull first</label>
@@ -215,8 +248,9 @@ function renderCard(p) {
           ${p.isSelf ? '<span class="self-badge" title="This dashboard is running from this project">this manager</span>' : ''}
         </span>
         <span class="card-summary">
-          ${!expanded ? `<span class="summary-text">${escapeHtml(summaryText(p))}</span>` : ''}
-          <span class="badge ${p.rollup}">${p.rollup}</span>
+          <span class="summary-text">${escapeHtml(summaryText(p))}</span>
+          ${p.git?.dirty ? '<span class="tag warn">dirty</span>' : ''}
+          <span class="badge ${p.dismissed ? 'dismissed' : p.rollup}">${p.rollup}</span>
         </span>
       </button>
       ${expanded ? renderCardBody(p) : ''}
@@ -325,6 +359,7 @@ async function onClick(e) {
 
   if (action === 'toggle') {
     state.expanded.has(name) ? state.expanded.delete(name) : state.expanded.add(name);
+    saveExpanded();
     render();
     return;
   }
@@ -352,23 +387,23 @@ async function onClick(e) {
 
   try {
     if (action === 'fetch') {
-      await fetchJSON(`/api/projects/${name}/fetch`, { method: 'POST' });
+      await fetchJSON(`/api/projects/${encodeURIComponent(name)}/fetch`, { method: 'POST' });
       attachStream(name, {
         onDone: async (status) => {
           if (status !== 'success') return;
-          const ab = await fetchJSON(`/api/projects/${name}/ahead-behind`);
+          const ab = await fetchJSON(`/api/projects/${encodeURIComponent(name)}/ahead-behind`);
           state.aheadBehind.set(name, ab);
           render();
         },
       });
     } else if (action === 'pull') {
-      await fetchJSON(`/api/projects/${name}/pull`, { method: 'POST' });
+      await fetchJSON(`/api/projects/${encodeURIComponent(name)}/pull`, { method: 'POST' });
       attachStream(name);
     } else if (action === 'rebuild') {
       const pull = state.pullFirst.has(name);
       const isSelf = state.projects.get(name)?.isSelf && state.self.detected;
       if (isSelf && !confirm('Rebuild and restart the manager itself? The dashboard will be unavailable for a short while.')) return;
-      await fetchJSON(`/api/projects/${name}/rebuild`, {
+      await fetchJSON(`/api/projects/${encodeURIComponent(name)}/rebuild`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pull }),
@@ -382,7 +417,7 @@ async function onClick(e) {
         return;
       }
       const rebuild = state.rebuildAfter.has(name);
-      await fetchJSON(`/api/projects/${name}/checkout`, {
+      await fetchJSON(`/api/projects/${encodeURIComponent(name)}/checkout`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ hash, rebuild }),
@@ -391,7 +426,7 @@ async function onClick(e) {
       state.rebuildAfter.delete(name);
       attachStream(name, { restartOnSuccess: rebuild && state.projects.get(name)?.isSelf && state.self.detected });
     } else if (action === 'reattach') {
-      await fetchJSON(`/api/projects/${name}/reattach`, { method: 'POST' });
+      await fetchJSON(`/api/projects/${encodeURIComponent(name)}/reattach`, { method: 'POST' });
       attachStream(name);
     }
     await refresh();
@@ -409,6 +444,8 @@ function onChange(e) {
     state.selectedCommit.set(name, e.target.value);
   } else if (e.target.matches('[data-role="pull-first"]')) {
     e.target.checked ? state.pullFirst.add(name) : state.pullFirst.delete(name);
+    const rebuild = card.querySelector('[data-action="rebuild"]');
+    if (rebuild) rebuild.textContent = e.target.checked ? 'Pull + Rebuild' : 'Rebuild';
   } else if (e.target.matches('[data-role="rebuild-after"]')) {
     e.target.checked ? state.rebuildAfter.add(name) : state.rebuildAfter.delete(name);
   }
@@ -420,7 +457,7 @@ async function onFocusIn(e) {
   const name = select.closest('.card').dataset.project;
   if (state.history.has(name)) return;
   try {
-    const history = await fetchJSON(`/api/projects/${name}/history`);
+    const history = await fetchJSON(`/api/projects/${encodeURIComponent(name)}/history`);
     state.history.set(name, history);
     render();
   } catch (err) {
