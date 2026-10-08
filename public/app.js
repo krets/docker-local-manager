@@ -115,10 +115,22 @@ function renderGitBlock(p) {
     ? `<div class="git-line">
         <code>${git.hash}</code> ${escapeHtml(git.message)}
         ${git.detached ? '<span class="tag warn">detached</span>' : `<span class="tag">${escapeHtml(git.branch ?? '')}</span>`}
-        ${git.dirty ? '<span class="tag warn">dirty</span>' : ''}
         ${ab ? `<span class="tag">${ab.ahead}↑ ${ab.behind}↓ · checked ${timeAgo(ab.checkedAt)}</span>` : ''}
       </div>`
     : '<div class="git-line">not a git repository</div>';
+}
+
+function menuItem({ label, action, op = '', service = '', reason = '', sep = false }) {
+  return `<button role="menuitem" type="button" class="${sep ? 'menu-sep' : ''}" data-action="${action}" data-op="${op}" data-service="${escapeHtml(service)}" ${gate(reason)}>${label}</button>`;
+}
+
+/** A ⋮ button with its dropdown. `key` identifies which menu is open (state.menuOpen). */
+function renderMenu(key, items, label = 'More actions') {
+  const open = state.menuOpen === key;
+  return `<span class="menu-wrap">
+      <button class="kebab" type="button" data-action="menu" data-menu="${escapeHtml(key)}" aria-label="${label}" aria-haspopup="menu" aria-expanded="${open}">⋮</button>
+      ${open ? `<div class="menu" role="menu">${items.map(menuItem).join('')}</div>` : ''}
+    </span>`;
 }
 
 function renderServicesBlock(p) {
@@ -128,31 +140,31 @@ function renderServicesBlock(p) {
   if (!p.services.length) {
     return '<p class="git-line">No containers created yet.</p>';
   }
-  const busyReason = p.running ? 'An operation is already running for this project' : '';
-  const btn = (op, service, label, reason = busyReason) =>
-    `<button class="small" type="button" data-action="${op === 'logs' ? 'logs' : 'container-op'}" data-op="${op}" data-service="${escapeHtml(service)}" ${gate(reason)}>${label}</button>`;
-  return `<div class="table-wrap"><table class="services">
+  const busy = p.running ? 'An operation is already running for this project' : '';
+  return `<table class="services">
       <thead><tr><th>Service</th><th>Image</th><th>State</th><th>Image created</th><th></th></tr></thead>
       <tbody>
         ${p.services
           .map((s) => {
             const running = s.state === 'running';
-            const stopReason = p.isSelf ? "The manager can't stop itself" : busyReason;
+            const items = [
+              { label: 'View logs', action: 'logs', service: s.service },
+              ...(running ? [{ label: 'Restart', action: 'container-op', op: 'restart', service: s.service, reason: busy }] : []),
+              running
+                ? { label: 'Stop', action: 'container-op', op: 'stop', service: s.service, reason: p.isSelf ? "The manager can't stop itself" : busy }
+                : { label: 'Start', action: 'container-op', op: 'start', service: s.service, reason: busy },
+            ];
             return `<tr>
               <td>${escapeHtml(s.service)}</td>
               <td>${escapeHtml(s.image)}</td>
               <td>${escapeHtml(s.state)}</td>
               <td>${timeAgo(s.builtAt)}</td>
-              <td class="row-actions">
-                ${btn('logs', s.service, 'Logs', '')}
-                ${running ? btn('restart', s.service, 'Restart') : ''}
-                ${running ? btn('stop', s.service, 'Stop', stopReason) : btn('start', s.service, 'Start')}
-              </td>
+              <td class="row-actions">${renderMenu(`${p.name}/${s.service}`, items, `Actions for ${s.service}`)}</td>
             </tr>`;
           })
           .join('')}
       </tbody>
-    </table></div>`;
+    </table>`;
 }
 
 function renderContainerLogs(p) {
@@ -190,11 +202,7 @@ function renderRollbackSection(p) {
   const canCheckout = p.git && !p.git.dirty && !busy;
   const history = state.history.get(p.name);
 
-  if (!open) {
-    return `<div class="actions">
-      <button data-action="toggle-rollback" type="button" ${gate(disabledReason(p, 'rollback'))}>Roll back…</button>
-    </div>`;
-  }
+  if (!open) return '';
 
   return `<div class="actions">
       <select data-role="history-select" ${canCheckout ? '' : 'disabled'}>
@@ -216,20 +224,23 @@ function renderRollbackSection(p) {
     </div>`;
 }
 
-function renderContainerActions(p) {
-  if (!p.composeFilePresent) return '';
-  const running = p.services.filter((s) => s.state === 'running').length;
-  const busy = p.running ? 'An operation is already running for this project' : '';
-  const pick = (...reasons) => reasons.find(Boolean) ?? '';
-  const btn = (op, label, reason) =>
-    `<button type="button" data-action="container-op" data-op="${op}" data-service="" ${gate(reason)}>${label}</button>`;
-  return `<div class="actions">
-      ${btn('start', 'Start', pick(busy, p.isSelf && 'The manager is already running', running === p.services.length && p.services.length > 0 && 'All services are running'))}
-      ${btn('restart', 'Restart', pick(busy, !running && 'Nothing is running'))}
-      ${btn('stop', 'Stop', pick(busy, p.isSelf && "The manager can't stop itself", !running && 'Nothing is running'))}
-      <button type="button" data-action="logs" data-service="">Logs</button>
-    </div>
-    ${renderContainerLogs(p)}`;
+/** Items for the card's ⋮ menu: project-wide container controls, rollback, dismiss. */
+function cardMenuItems(p) {
+  const items = [];
+  if (p.composeFilePresent) {
+    const running = p.services.filter((s) => s.state === 'running').length;
+    const busy = p.running ? 'An operation is already running for this project' : '';
+    const pick = (...reasons) => reasons.find(Boolean) ?? '';
+    items.push(
+      { label: 'Start all', action: 'container-op', op: 'start', reason: pick(busy, p.isSelf && 'The manager is already running', p.services.length > 0 && running === p.services.length && 'All services are running') },
+      { label: 'Restart all', action: 'container-op', op: 'restart', reason: pick(busy, !running && 'Nothing is running') },
+      { label: 'Stop all', action: 'container-op', op: 'stop', reason: pick(busy, p.isSelf && "The manager can't stop itself", !running && 'Nothing is running') },
+      { label: 'View logs', action: 'logs' },
+    );
+  }
+  if (p.git) items.push({ label: 'Roll back…', action: 'toggle-rollback', reason: disabledReason(p, 'rollback'), sep: true });
+  items.push({ label: p.dismissed ? 'Restore to the dashboard' : 'Dismiss', action: p.dismissed ? 'restore' : 'dismiss', sep: true });
+  return items;
 }
 
 function renderCardBody(p) {
@@ -241,18 +252,6 @@ function renderCardBody(p) {
   const hint = reasons(p);
 
   return `
-      <div class="card-tools">
-        <button class="kebab" data-action="menu" type="button" aria-label="More actions" aria-haspopup="menu" aria-expanded="${state.menuOpen === p.name}">⋮</button>
-        ${
-          state.menuOpen === p.name
-            ? `<div class="menu" role="menu">
-                <button role="menuitem" data-action="${p.dismissed ? 'restore' : 'dismiss'}" type="button">${
-                  p.dismissed ? 'Restore to the dashboard' : 'Dismiss (dim and move to bottom)'
-                }</button>
-              </div>`
-            : ''
-        }
-      </div>
       ${renderGitBlock(p)}
       ${renderServicesBlock(p)}
       <div class="actions">
@@ -271,7 +270,7 @@ function renderCardBody(p) {
           ? '<p class="git-line tag warn" style="display:block">This is the manager\'s own project, but its container couldn\'t be identified, so a rebuild here will tear down the container handling the request and may leave a stale container behind. Prefer <code>docker compose up -d --build</code> from the terminal.</p>'
           : ''
       }
-      ${renderContainerActions(p)}
+      ${renderContainerLogs(p)}
       ${p.git ? renderRollbackSection(p) : ''}
       ${hint.length ? `<p class="git-line">${hint.join(' · ')}</p>` : ''}
       ${log ? renderLog(log) : ''}
@@ -283,7 +282,8 @@ function renderCard(p) {
 
   return `
     <section class="card ${p.dismissed ? 'dismissed' : ''}" data-project="${escapeHtml(p.name)}">
-      <button class="card-header" data-action="toggle" type="button">
+      <div class="card-header">
+      <button class="card-toggle" data-action="toggle" type="button">
         <span class="card-title">
           <span class="chevron">${expanded ? '▾' : '▸'}</span>
           <h2>${escapeHtml(p.name)}</h2>
@@ -295,6 +295,8 @@ function renderCard(p) {
           <span class="badge ${p.dismissed ? 'dismissed' : p.rollup}">${p.rollup}</span>
         </span>
       </button>
+      ${renderMenu(p.name, cardMenuItems(p))}
+      </div>
       ${expanded ? renderCardBody(p) : ''}
     </section>
   `;
@@ -412,9 +414,14 @@ async function onClick(e) {
     return;
   }
   if (action === 'menu') {
-    state.menuOpen = state.menuOpen === name ? null : name;
+    const key = btn.dataset.menu;
+    state.menuOpen = state.menuOpen === key ? null : key;
     render();
     return;
+  }
+  if (state.menuOpen) {
+    state.menuOpen = null; // picking a menu item closes the menu
+    render();
   }
   if (action === 'dismiss' || action === 'restore') {
     state.menuOpen = null;
@@ -679,7 +686,7 @@ async function init() {
   projectsEl.addEventListener('change', onChange);
   projectsEl.addEventListener('focusin', onFocusIn);
   document.addEventListener('click', (e) => {
-    if (state.menuOpen && !e.target.closest('.card-tools')) {
+    if (state.menuOpen && !e.target.closest('.menu-wrap')) {
       state.menuOpen = null;
       render();
     }

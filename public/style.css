@@ -66,9 +66,17 @@ main {
 
 .card-header {
   display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.card-toggle {
+  display: flex;
   justify-content: space-between;
   align-items: center;
   gap: 0.5rem;
+  flex: 1;
+  min-width: 0;
   width: 100%;
   background: none;
   border: none;
@@ -80,7 +88,7 @@ main {
   cursor: pointer;
 }
 
-.card-header h2 {
+.card-toggle h2 {
   margin: 0;
   font-size: 1rem;
 }
@@ -317,15 +325,15 @@ select {
   color: var(--muted);
 }
 
-.card-tools {
+.menu-wrap {
   position: relative;
-  display: flex;
-  justify-content: flex-end;
-  margin-bottom: 0.25rem;
+  flex-shrink: 0;
 }
 
 .kebab {
-  padding: 0 0.6rem;
+  padding: 0 0.5rem;
+  border: none;
+  background: none;
   font-size: 1.2rem;
   line-height: 1.6;
 }
@@ -335,7 +343,7 @@ select {
   top: 100%;
   right: 0;
   z-index: 10;
-  min-width: 14rem;
+  min-width: 12rem;
   padding: 0.25rem;
   background: var(--card-bg);
   border: 1px solid var(--border);
@@ -390,10 +398,6 @@ button.small {
   font-size: 0.75rem;
 }
 
-.table-wrap {
-  overflow-x: auto;
-}
-
 .row-actions {
   white-space: nowrap;
   text-align: right;
@@ -411,4 +415,13 @@ button.small {
 .log[data-role="container-logs"] {
   max-height: 20rem;
   overflow: auto;
+}
+
+.menu button.menu-sep {
+  border-top: 1px solid var(--border);
+  border-radius: 0;
+}
+
+.menu button:hover:not(:disabled) {
+  background: var(--bg);
 }
