@@ -1,28 +1,18 @@
 import { Router } from 'express';
 import path from 'node:path';
-import { access, readFile } from 'node:fs/promises';
+import { access } from 'node:fs/promises';
 import { discoverProjects } from '../services/discovery.js';
 import * as git from '../services/git.js';
 import * as docker from '../services/docker.js';
 import { startOperation, isRunning, subscribeToStream } from '../lib/operations.js';
 import { config } from '../config.js';
-import { selfName } from '../lib/self.js';
+import { isSelfProject, rebuildStepFor } from '../lib/self.js';
 
 async function composeFileExists(project) {
   if (!project.composeFile) return false;
   return access(path.join(project.dir, project.composeFile))
     .then(() => true)
     .catch(() => false);
-}
-
-/** Detects the manager's own project dir by matching its package.json name -- see src/lib/self.js. */
-async function isSelfProject(project) {
-  try {
-    const pkg = JSON.parse(await readFile(path.join(project.dir, 'package.json'), 'utf8'));
-    return pkg.name === selfName;
-  } catch {
-    return false;
-  }
 }
 
 export const router = Router();
@@ -80,7 +70,7 @@ async function handleStart(req, res, fn) {
 }
 
 router.get('/config', (req, res) => {
-  res.json({ pollIntervalMs: config.pollIntervalMs });
+  res.json({ pollIntervalMs: config.pollIntervalMs, selfCheckIntervalMs: config.selfCheckIntervalMs });
 });
 
 router.get('/projects', async (req, res) => {
@@ -127,7 +117,7 @@ router.post('/projects/:name/rebuild', (req, res) =>
       assertCleanAndAttached(await git.getStatus(project.dir));
       steps.push(git.pullStep(project.dir));
     }
-    steps.push(docker.rebuildStep(project.dir, project.composeFile));
+    steps.push((await rebuildStepFor(project)).step);
     return startOperation(project.name, 'rebuild', steps);
   }),
 );
@@ -141,7 +131,7 @@ router.post('/projects/:name/checkout', (req, res) => {
     if (status?.dirty) throw httpError(409, 'Working tree is dirty; commit or discard changes first');
 
     const steps = [git.checkoutStep(project.dir, hash)];
-    if (rebuild) steps.push(docker.rebuildStep(project.dir, project.composeFile));
+    if (rebuild) steps.push((await rebuildStepFor(project)).step);
     return startOperation(project.name, 'checkout', steps);
   });
 });

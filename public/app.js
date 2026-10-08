@@ -9,7 +9,15 @@ const state = {
   rebuildAfter: new Set(), // names with "rebuild after" checked
   expanded: new Set(), // names showing full detail instead of the one-line summary
   rollbackOpen: new Set(), // names showing the rollback controls within an expanded card
+  selfCheckIntervalMs: 300000,
+  self: { detected: false, project: null, bootId: null }, // the manager's own container/project
+  selfUpdate: null, // latest { available, ahead, behind } from /api/self/check
+  selfUpdateDismissed: null, // the `behind` count the user dismissed the banner at
+  selfCheckedAt: 0,
+  restarting: false,
 };
+
+const RESTART_COUNTDOWN_S = 60;
 
 async function fetchJSON(url, options) {
   const res = await fetch(url, options);
@@ -172,8 +180,8 @@ function renderCardBody(p) {
         ${canReattach ? '<button data-action="reattach">Return to latest</button>' : ''}
       </div>
       ${
-        p.isSelf
-          ? '<p class="git-line tag warn" style="display:block">This is the manager\'s own project — rebuilding it here tears down the container handling this request, which can leave a stale container behind if interrupted. Prefer running <code>docker compose up -d --build</code> from the terminal for this one.</p>'
+        p.isSelf && !state.self.detected
+          ? '<p class="git-line tag warn" style="display:block">This is the manager\'s own project, but its container couldn\'t be identified, so a rebuild here will tear down the container handling the request and may leave a stale container behind. Prefer <code>docker compose up -d --build</code> from the terminal.</p>'
           : ''
       }
       ${renderRollbackSection(p)}
@@ -238,7 +246,7 @@ function closeStream(name) {
   if (log?.es) log.es.close();
 }
 
-function attachStream(name, { onDone } = {}) {
+function attachStream(name, { onDone, restartOnSuccess = false } = {}) {
   state.expanded.add(name); // so the log is visible without the user having to find and expand the card
   closeStream(name);
   const es = new EventSource(`/api/projects/${encodeURIComponent(name)}/stream`);
@@ -257,11 +265,14 @@ function attachStream(name, { onDone } = {}) {
     log.exitCode = exitCode;
     es.close();
     refresh();
+    if (status === 'success' && restartOnSuccess) startRestart();
     if (status !== 'idle' && onDone) onDone(status);
   });
 
   es.onerror = () => {
-    /* EventSource retries automatically; nothing to do here */
+    // EventSource retries automatically. But if this operation is replacing
+    // our own container, a dropped stream most likely means we just died.
+    if (restartOnSuccess) startRestart();
   };
 
   render();
@@ -316,13 +327,15 @@ async function onClick(e) {
       attachStream(name);
     } else if (action === 'rebuild') {
       const pull = state.pullFirst.has(name);
+      const isSelf = state.projects.get(name)?.isSelf && state.self.detected;
+      if (isSelf && !confirm('Rebuild and restart the manager itself? The dashboard will be unavailable for a short while.')) return;
       await fetchJSON(`/api/projects/${name}/rebuild`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ pull }),
       });
       state.pullFirst.delete(name);
-      attachStream(name);
+      attachStream(name, { restartOnSuccess: isSelf });
     } else if (action === 'checkout') {
       const hash = state.selectedCommit.get(name);
       if (!hash) {
@@ -337,7 +350,7 @@ async function onClick(e) {
       });
       state.selectedCommit.delete(name);
       state.rebuildAfter.delete(name);
-      attachStream(name);
+      attachStream(name, { restartOnSuccess: rebuild && state.projects.get(name)?.isSelf && state.self.detected });
     } else if (action === 'reattach') {
       await fetchJSON(`/api/projects/${name}/reattach`, { method: 'POST' });
       attachStream(name);
@@ -376,7 +389,126 @@ async function onFocusIn(e) {
   }
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** One health probe with a short timeout, so a half-dead host can't stall the loop. */
+async function probeHealth(timeoutMs = 1500) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch('/api/health', { signal: ctrl.signal, cache: 'no-store' });
+    return res.ok ? await res.json() : null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Replaces the dashboard with a countdown while the manager's own container
+ * is replaced, polling /api/health until the *new* instance answers (a
+ * different bootId, or any answer after we've seen the host go away), then
+ * reloads straight into the manager. The countdown is only an estimate: if
+ * it runs out we keep polling and say so.
+ */
+async function startRestart() {
+  if (state.restarting) return;
+  state.restarting = true;
+  for (const log of state.logs.values()) log.es?.close();
+
+  const overlay = document.getElementById('restart-overlay');
+  const deadline = Date.now() + RESTART_COUNTDOWN_S * 1000;
+  overlay.hidden = false;
+
+  const paint = () => {
+    const left = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+    const pct = Math.min(100, ((RESTART_COUNTDOWN_S - left) / RESTART_COUNTDOWN_S) * 100);
+    overlay.innerHTML = `
+      <div class="restart-box">
+        <h2>Restarting the manager…</h2>
+        <div class="restart-count">${left > 0 ? left : '…'}</div>
+        <div class="restart-bar"><span style="width:${pct}%"></span></div>
+        <p>${
+          left > 0
+            ? 'Rebuilding and restarting. You’ll be taken back automatically once it’s up.'
+            : 'Taking longer than expected — still checking. A long build is normal; if it keeps going, the rebuild may have failed.'
+        }</p>
+        ${left > 0 ? '' : '<button type="button" data-action="dismiss-restart">Back to the dashboard</button>'}
+      </div>`;
+  };
+  paint();
+  const ticker = setInterval(paint, 1000);
+  overlay.onclick = (e) => {
+    if (!e.target.closest('[data-action="dismiss-restart"]')) return;
+    state.restarting = false;
+    clearInterval(ticker);
+    overlay.hidden = true;
+    refresh();
+  };
+
+  let sawDown = false;
+  while (state.restarting) {
+    const health = await probeHealth();
+    if (!health) {
+      sawDown = true;
+    } else if (health.bootId !== state.self.bootId || sawDown) {
+      clearInterval(ticker);
+      location.reload();
+      return;
+    }
+    await sleep(500);
+  }
+}
+
+function renderSelfBanner() {
+  const el = document.getElementById('self-banner');
+  const u = state.selfUpdate;
+  const show = state.self.detected && u?.available && state.selfUpdateDismissed !== u.behind;
+  el.hidden = !show;
+  if (!show) return;
+  el.innerHTML = `
+    <span>Manager update available — ${u.behind} new commit${u.behind === 1 ? '' : 's'} upstream.</span>
+    <span class="self-banner-actions">
+      <button class="primary" type="button" data-action="self-update">Update &amp; restart</button>
+      <button type="button" data-action="self-dismiss">Later</button>
+    </span>`;
+}
+
+async function checkSelfUpdate({ force = false } = {}) {
+  if (!state.self.detected || state.restarting) return;
+  if (!force && (document.hidden || Date.now() - state.selfCheckedAt < state.selfCheckIntervalMs - 1000)) return;
+  state.selfCheckedAt = Date.now();
+  try {
+    state.selfUpdate = await fetchJSON('/api/self/check', { method: 'POST' });
+    renderSelfBanner();
+  } catch (err) {
+    console.error('self update check failed', err);
+  }
+}
+
+async function onSelfBannerClick(e) {
+  const action = e.target.closest('button[data-action]')?.dataset.action;
+  if (action === 'self-dismiss') {
+    state.selfUpdateDismissed = state.selfUpdate.behind;
+    renderSelfBanner();
+  } else if (action === 'self-update') {
+    if (!confirm('Pull the latest changes and restart the manager? The dashboard will be unavailable for a short while.')) return;
+    try {
+      const { project } = await fetchJSON('/api/self/update', { method: 'POST' });
+      attachStream(project, { restartOnSuccess: true });
+      document.getElementById('self-banner').hidden = true;
+      await refresh();
+    } catch (err) {
+      alert(err.message);
+    }
+  }
+}
+
 async function init() {
+  document.getElementById('self-banner').addEventListener('click', onSelfBannerClick);
   const projectsEl = document.getElementById('projects');
   projectsEl.addEventListener('click', onClick);
   projectsEl.addEventListener('change', onChange);
@@ -385,12 +517,23 @@ async function init() {
   try {
     const cfg = await fetchJSON('/api/config');
     state.pollIntervalMs = cfg.pollIntervalMs;
+    state.selfCheckIntervalMs = cfg.selfCheckIntervalMs ?? state.selfCheckIntervalMs;
   } catch {
     /* fall back to default pollIntervalMs */
+  }
+  try {
+    state.self = await fetchJSON('/api/self');
+  } catch {
+    /* treated as "not self-aware"; plain behavior */
   }
 
   await refresh();
   setInterval(refresh, state.pollIntervalMs);
+
+  // Update checks only run while a session is actually open and visible.
+  checkSelfUpdate({ force: true });
+  setInterval(checkSelfUpdate, 30000);
+  document.addEventListener('visibilitychange', () => checkSelfUpdate());
 }
 
 init();

@@ -34,7 +34,12 @@ The manager is installed the same way it installs everything else: as a git chec
 
 Because this directory then satisfies the Discovery Rule above, **the manager will list and manage itself** on its own dashboard — "Update Source" pulls its own repo, "Rebuild" rebuilds its own image. This is intentional, not a bug to route around, but it has one sharp edge:
 
-* **Self-rebuild drops the request mid-flight, and can wedge the *next* rebuild too.** Rebuilding the manager's own project recreates the very container handling that HTTP/SSE request, so the log stream cuts off abruptly instead of reporting a clean "success." Usually the rebuild still completes normally. But `docker compose up --build` recreates a container by renaming the old one to a temporary name, removing it, then creating the replacement — and if the container gets killed partway through that (because it's the one running the command), the temp-named container can be left behind, uncleaned. The *next* rebuild attempt then fails with a name conflict until that stale container finishes getting cleaned up (a second attempt is usually enough). The dashboard flags the manager's own project with this warning and recommends rebuilding it from the terminal instead (`docker compose up -d --build` from outside the container, which isn't subject to this at all) — see `isSelf` in the API.
+### Self-awareness
+The manager identifies its own container (its hostname is the container id, resolved through the docker socket; override with `SELF_CONTAINER`) and its own project (by `package.json` name). When both are found:
+
+* **Self-restart:** rebuilding the manager's own project (Rebuild, rollback + rebuild, or "Update & restart") doesn't run `docker compose up -d --build` in-process, which would kill the command mid-recreate. It launches a short-lived helper container from the same image (`--volumes-from` the manager, `--rm`) that performs the rebuild after a short delay, so the operation finishes cleanly first. If the container can't be identified, it falls back to a plain rebuild and the dashboard shows the old warning.
+* **Restart countdown:** when a self-restart operation succeeds (or its stream drops), the dashboard swaps to a 60-second countdown and polls `GET /api/health` every ~0.5s with a 1.5s timeout. The response carries a per-process `bootId`; once a different `bootId` answers (or any answer after the host was seen down) the page reloads straight into the manager. If the countdown expires first it keeps polling and offers a way back to the dashboard.
+* **Update notices:** while a dashboard tab is open and visible, it asks the server every `SELF_CHECK_INTERVAL_MS` (default 5 min) to `git fetch` the manager's own repo; if it's behind, a banner offers "Update & restart" (pull, then self-restart). This is the one automatic fetch, scoped to the manager's own repo and only while a session is active; all other projects remain explicit-fetch-only.
 
 ---
 
@@ -88,6 +93,10 @@ Each project entry provides actionable controls to manage deployment states:
 * `GET /api/projects/:name/history` — recent commits from local `git log` (hash, message, date), default last 20.
 * `POST /api/projects/:name/checkout` — body `{ hash: string, rebuild?: boolean }`; check out a prior commit (detaches HEAD), optionally chaining into a rebuild.
 * `POST /api/projects/:name/reattach` — check out the remote's default branch to leave detached HEAD state.
+* `GET /api/health` — `{ ok, bootId }`; used by the restart countdown.
+* `GET /api/self` — `{ detected, project, bootId }`.
+* `POST /api/self/check` — fetch the manager's own repo; `{ available, ahead, behind }`.
+* `POST /api/self/update` — pull, then self-restart; `202` + operation id (stream via the project's `/stream`).
 * `GET /api/projects/:name/stream` — SSE stream of the current/most recent operation's output and status.
 
 ---

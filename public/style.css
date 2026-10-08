@@ -248,3 +248,70 @@ select {
 
 .log-status.success { color: var(--up); }
 .log-status.error { color: var(--down); }
+
+.self-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  max-width: 720px;
+  margin: 0.75rem auto 0;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  background: var(--card-bg);
+}
+
+.self-banner[hidden],
+.restart-overlay[hidden] {
+  display: none;
+}
+
+.self-banner-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.restart-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  background: var(--bg);
+}
+
+.restart-box {
+  width: 100%;
+  max-width: 360px;
+  text-align: center;
+}
+
+.restart-count {
+  font-size: 5rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+
+.restart-bar {
+  height: 6px;
+  margin: 1rem 0;
+  border-radius: 3px;
+  background: var(--border);
+  overflow: hidden;
+}
+
+.restart-bar span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 1s linear;
+}
+
+.restart-box p {
+  color: var(--muted);
+}

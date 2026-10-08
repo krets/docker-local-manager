@@ -103,3 +103,9 @@ export const reattachStep = (dir, branch) => ({
   args: ['checkout', branch],
   cwd: dir,
 });
+
+/** Quiet, bounded fetch for background checks (no operation record/log). */
+export async function fetchQuiet(dir, timeoutMs = 60000) {
+  const { code, stderr } = await run('git', ['fetch'], { cwd: dir, timeoutMs });
+  if (code !== 0) throw new Error(stderr.trim() || `git fetch exited ${code}`);
+}
