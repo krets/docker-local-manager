@@ -237,7 +237,7 @@ select {
 }
 
 .log .stderr {
-  color: #ff7b72;
+  color: #79c0ff; /* just another output channel, not an error */
 }
 
 .log-status {
@@ -365,4 +365,21 @@ select {
 .card.dismissed:hover,
 .card.dismissed:focus-within {
   opacity: 0.85;
+}
+
+.self-badge {
+  flex-shrink: 0;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.card:has(.self-badge) {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
 }

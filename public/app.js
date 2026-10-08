@@ -212,6 +212,7 @@ function renderCard(p) {
         <span class="card-title">
           <span class="chevron">${expanded ? '▾' : '▸'}</span>
           <h2>${escapeHtml(p.name)}</h2>
+          ${p.isSelf ? '<span class="self-badge" title="This dashboard is running from this project">this manager</span>' : ''}
         </span>
         <span class="card-summary">
           ${!expanded ? `<span class="summary-text">${escapeHtml(summaryText(p))}</span>` : ''}
