@@ -5,6 +5,7 @@ import { discoverProjects } from '../services/discovery.js';
 import * as git from '../services/git.js';
 import * as docker from '../services/docker.js';
 import { startOperation, isRunning, subscribeToStream } from '../lib/operations.js';
+import { isDismissed, setDismissed } from '../lib/state.js';
 import { config } from '../config.js';
 import { isSelfProject, rebuildStepFor } from '../lib/self.js';
 
@@ -35,10 +36,11 @@ async function findProject(name) {
 }
 
 async function buildProjectStatus(project) {
-  const [gitStatus, composeFilePresent, isSelf] = await Promise.all([
+  const [gitStatus, composeFilePresent, isSelf, dismissed] = await Promise.all([
     git.getStatus(project.dir),
     composeFileExists(project),
     isSelfProject(project),
+    isDismissed(project.name),
   ]);
   const services = composeFilePresent ? await docker.getServiceStatus(project.dir, project.composeFile) : [];
 
@@ -47,6 +49,7 @@ async function buildProjectStatus(project) {
     git: gitStatus,
     composeFilePresent,
     isSelf,
+    dismissed,
     services,
     rollup: docker.rollup(services),
     running: isRunning(project.name),
@@ -83,6 +86,15 @@ router.get('/projects/:name', async (req, res) => {
   if (!project) return res.status(404).json({ error: 'Project not found' });
   res.json(await buildProjectStatus(project));
 });
+
+for (const [action, value] of [['dismiss', true], ['restore', false]]) {
+  router.post(`/projects/:name/${action}`, async (req, res) => {
+    const project = await findProject(req.params.name);
+    if (!project) return res.status(404).json({ error: 'Project not found' });
+    await setDismissed(project.name, value);
+    res.json({ name: project.name, dismissed: value });
+  });
+}
 
 router.get('/projects/:name/history', async (req, res) => {
   const project = await findProject(req.params.name);

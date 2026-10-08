@@ -8,6 +8,7 @@ const state = {
   pullFirst: new Set(), // names with "pull first" checked
   rebuildAfter: new Set(), // names with "rebuild after" checked
   expanded: new Set(), // names showing full detail instead of the one-line summary
+  menuOpen: null, // name of the card whose kebab menu is open
   rollbackOpen: new Set(), // names showing the rollback controls within an expanded card
   selfCheckIntervalMs: 300000,
   self: { detected: false, project: null, bootId: null }, // the manager's own container/project
@@ -168,6 +169,18 @@ function renderCardBody(p) {
   const hint = reasons(p);
 
   return `
+      <div class="card-tools">
+        <button class="kebab" data-action="menu" type="button" aria-label="More actions" aria-haspopup="menu" aria-expanded="${state.menuOpen === p.name}">⋮</button>
+        ${
+          state.menuOpen === p.name
+            ? `<div class="menu" role="menu">
+                <button role="menuitem" data-action="${p.dismissed ? 'restore' : 'dismiss'}" type="button">${
+                  p.dismissed ? 'Restore to the dashboard' : 'Dismiss (dim and move to bottom)'
+                }</button>
+              </div>`
+            : ''
+        }
+      </div>
       ${renderGitBlock(p)}
       ${renderServicesBlock(p)}
       <div class="actions">
@@ -194,7 +207,7 @@ function renderCard(p) {
   const expanded = state.expanded.has(p.name);
 
   return `
-    <section class="card" data-project="${escapeHtml(p.name)}">
+    <section class="card ${p.dismissed ? 'dismissed' : ''}" data-project="${escapeHtml(p.name)}">
       <button class="card-header" data-action="toggle" type="button">
         <span class="card-title">
           <span class="chevron">${expanded ? '▾' : '▸'}</span>
@@ -210,21 +223,30 @@ function renderCard(p) {
   `;
 }
 
-function renderDashboardSummary() {
-  const projects = [...state.projects.values()];
+// Most active first: running, then partially running, then down; name breaks ties.
+const ROLLUP_ORDER = { up: 0, partial: 1, down: 2 };
+const byActivity = (a, b) => ROLLUP_ORDER[a.rollup] - ROLLUP_ORDER[b.rollup] || a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+
+function renderDashboardSummary(projects, dismissedCount) {
   if (!projects.length) return '';
   const counts = { up: 0, partial: 0, down: 0 };
   for (const p of projects) counts[p.rollup]++;
   return `<p class="dashboard-summary">${projects.length} projects · ${counts.up} up${
     counts.partial ? ` · ${counts.partial} partial` : ''
-  }${counts.down ? ` · ${counts.down} down` : ''}</p>`;
+  }${counts.down ? ` · ${counts.down} down` : ''}${dismissedCount ? ` · ${dismissedCount} dismissed` : ''}</p>`;
 }
 
 function render() {
   const main = document.getElementById('projects');
-  const projects = [...state.projects.values()];
-  main.innerHTML = projects.length
-    ? renderDashboardSummary() + projects.map(renderCard).join('')
+  const all = [...state.projects.values()].sort(byActivity);
+  const active = all.filter((p) => !p.dismissed);
+  const dismissed = all.filter((p) => p.dismissed);
+  main.innerHTML = all.length
+    ? renderDashboardSummary(active, dismissed.length) +
+      active.map(renderCard).join('') +
+      (dismissed.length
+        ? `<h3 class="section-title">Dismissed (${dismissed.length})</h3>${dismissed.map(renderCard).join('')}`
+        : '')
     : '<p class="empty">No projects found under the configured root.</p>';
 }
 
@@ -303,6 +325,22 @@ async function onClick(e) {
   if (action === 'toggle') {
     state.expanded.has(name) ? state.expanded.delete(name) : state.expanded.add(name);
     render();
+    return;
+  }
+  if (action === 'menu') {
+    state.menuOpen = state.menuOpen === name ? null : name;
+    render();
+    return;
+  }
+  if (action === 'dismiss' || action === 'restore') {
+    state.menuOpen = null;
+    try {
+      await fetchJSON(`/api/projects/${encodeURIComponent(name)}/${action}`, { method: 'POST' });
+      state.expanded.delete(name);
+      await refresh();
+    } catch (err) {
+      alert(err.message);
+    }
     return;
   }
   if (action === 'toggle-rollback') {
@@ -513,6 +551,12 @@ async function init() {
   projectsEl.addEventListener('click', onClick);
   projectsEl.addEventListener('change', onChange);
   projectsEl.addEventListener('focusin', onFocusIn);
+  document.addEventListener('click', (e) => {
+    if (state.menuOpen && !e.target.closest('.card-tools')) {
+      state.menuOpen = null;
+      render();
+    }
+  });
 
   try {
     const cfg = await fetchJSON('/api/config');
