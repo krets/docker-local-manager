@@ -12,6 +12,7 @@ export function run(command, args, { cwd, timeoutMs = 15000 } = {}) {
     const child = spawn(command, args, { cwd });
     let stdout = '';
     let stderr = '';
+    let output = ''; // stdout + stderr interleaved in arrival order
 
     const timer = setTimeout(() => {
       child.kill('SIGKILL');
@@ -20,9 +21,11 @@ export function run(command, args, { cwd, timeoutMs = 15000 } = {}) {
 
     child.stdout.on('data', (chunk) => {
       stdout += chunk;
+      output += chunk;
     });
     child.stderr.on('data', (chunk) => {
       stderr += chunk;
+      output += chunk;
     });
     child.on('error', (err) => {
       clearTimeout(timer);
@@ -30,7 +33,7 @@ export function run(command, args, { cwd, timeoutMs = 15000 } = {}) {
     });
     child.on('close', (code) => {
       clearTimeout(timer);
-      resolve({ code, stdout, stderr });
+      resolve({ code, stdout, stderr, output });
     });
   });
 }

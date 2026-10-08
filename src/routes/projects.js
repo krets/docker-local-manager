@@ -5,6 +5,7 @@ import { discoverProjects } from '../services/discovery.js';
 import * as git from '../services/git.js';
 import * as docker from '../services/docker.js';
 import { startOperation, isRunning, subscribeToStream } from '../lib/operations.js';
+import { containerStepFor } from '../lib/self.js';
 import { isDismissed, setDismissed } from '../lib/state.js';
 import { config } from '../config.js';
 import { isSelfProject, rebuildStepFor } from '../lib/self.js';
@@ -155,6 +156,38 @@ router.post('/projects/:name/reattach', (req, res) =>
     return startOperation(project.name, 'reattach', [git.reattachStep(project.dir, branch)]);
   }),
 );
+
+const SERVICE_NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
+
+function parseService(value) {
+  if (value == null || value === '') return undefined;
+  if (typeof value !== 'string' || !SERVICE_NAME.test(value)) throw httpError(400, 'Invalid service name');
+  return value;
+}
+
+router.post('/projects/:name/containers/:action', (req, res) =>
+  handleStart(req, res, async (project) => {
+    const { action } = req.params;
+    if (!docker.CONTAINER_ACTIONS.includes(action)) throw httpError(400, `Unknown action "${action}"`);
+    const service = parseService(req.body?.service);
+    if (!(await composeFileExists(project))) throw httpError(409, 'No compose file at the current commit');
+    const { step } = await containerStepFor(project, action, service);
+    return startOperation(project.name, action, [step]);
+  }),
+);
+
+router.get('/projects/:name/logs', async (req, res) => {
+  const project = await findProject(req.params.name);
+  if (!project) return res.status(404).json({ error: 'Project not found' });
+  try {
+    const service = parseService(req.query.service);
+    const tail = Math.min(Math.max(Number(req.query.tail) || 200, 1), 2000);
+    if (!(await composeFileExists(project))) throw httpError(409, 'No compose file at the current commit');
+    res.json({ service: service ?? null, text: await docker.getLogs(project.dir, project.composeFile, service, tail) });
+  } catch (err) {
+    res.status(err.statusCode ?? 500).json({ error: err.message });
+  }
+});
 
 router.get('/projects/:name/stream', async (req, res) => {
   const project = await findProject(req.params.name);

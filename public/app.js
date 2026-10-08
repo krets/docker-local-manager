@@ -26,6 +26,8 @@ const state = {
   pullFirst: new Set(), // names with "pull first" checked
   rebuildAfter: new Set(), // names with "rebuild after" checked
   expanded: loadExpanded(), // names showing full detail instead of the one-line summary
+  containerLogs: new Map(), // name -> { service, text } shown under the card
+  scrollLogsFor: null, // card whose freshly loaded logs should be scrolled to the end
   menuOpen: null, // name of the card whose kebab menu is open
   rollbackOpen: new Set(), // names showing the rollback controls within an expanded card
   selfCheckIntervalMs: 300000,
@@ -126,21 +128,44 @@ function renderServicesBlock(p) {
   if (!p.services.length) {
     return '<p class="git-line">No containers created yet.</p>';
   }
-  return `<table class="services">
-      <thead><tr><th>Service</th><th>Image</th><th>State</th><th>Image created</th></tr></thead>
+  const busyReason = p.running ? 'An operation is already running for this project' : '';
+  const btn = (op, service, label, reason = busyReason) =>
+    `<button class="small" type="button" data-action="${op === 'logs' ? 'logs' : 'container-op'}" data-op="${op}" data-service="${escapeHtml(service)}" ${gate(reason)}>${label}</button>`;
+  return `<div class="table-wrap"><table class="services">
+      <thead><tr><th>Service</th><th>Image</th><th>State</th><th>Image created</th><th></th></tr></thead>
       <tbody>
         ${p.services
-          .map(
-            (s) => `<tr>
+          .map((s) => {
+            const running = s.state === 'running';
+            const stopReason = p.isSelf ? "The manager can't stop itself" : busyReason;
+            return `<tr>
               <td>${escapeHtml(s.service)}</td>
               <td>${escapeHtml(s.image)}</td>
               <td>${escapeHtml(s.state)}</td>
               <td>${timeAgo(s.builtAt)}</td>
-            </tr>`,
-          )
+              <td class="row-actions">
+                ${btn('logs', s.service, 'Logs', '')}
+                ${running ? btn('restart', s.service, 'Restart') : ''}
+                ${running ? btn('stop', s.service, 'Stop', stopReason) : btn('start', s.service, 'Start')}
+              </td>
+            </tr>`;
+          })
           .join('')}
       </tbody>
-    </table>`;
+    </table></div>`;
+}
+
+function renderContainerLogs(p) {
+  const logs = state.containerLogs.get(p.name);
+  if (!logs) return '';
+  return `<div class="container-logs-head">
+      <span>Logs — ${escapeHtml(logs.service ?? 'all services')}</span>
+      <span>
+        <button class="small" type="button" data-action="logs" data-service="${escapeHtml(logs.service ?? '')}">Refresh</button>
+        <button class="small" type="button" data-action="close-logs">Close</button>
+      </span>
+    </div>
+    <div class="log" data-role="container-logs">${escapeHtml(logs.text.trim() || '(no output)')}</div>`;
 }
 
 /** Why a git/compose action is unavailable, or '' if it's fine. Used for the button tooltip. */
@@ -191,6 +216,22 @@ function renderRollbackSection(p) {
     </div>`;
 }
 
+function renderContainerActions(p) {
+  if (!p.composeFilePresent) return '';
+  const running = p.services.filter((s) => s.state === 'running').length;
+  const busy = p.running ? 'An operation is already running for this project' : '';
+  const pick = (...reasons) => reasons.find(Boolean) ?? '';
+  const btn = (op, label, reason) =>
+    `<button type="button" data-action="container-op" data-op="${op}" data-service="" ${gate(reason)}>${label}</button>`;
+  return `<div class="actions">
+      ${btn('start', 'Start', pick(busy, p.isSelf && 'The manager is already running', running === p.services.length && p.services.length > 0 && 'All services are running'))}
+      ${btn('restart', 'Restart', pick(busy, !running && 'Nothing is running'))}
+      ${btn('stop', 'Stop', pick(busy, p.isSelf && "The manager can't stop itself", !running && 'Nothing is running'))}
+      <button type="button" data-action="logs" data-service="">Logs</button>
+    </div>
+    ${renderContainerLogs(p)}`;
+}
+
 function renderCardBody(p) {
   const git = p.git;
   const log = state.logs.get(p.name);
@@ -230,7 +271,8 @@ function renderCardBody(p) {
           ? '<p class="git-line tag warn" style="display:block">This is the manager\'s own project, but its container couldn\'t be identified, so a rebuild here will tear down the container handling the request and may leave a stale container behind. Prefer <code>docker compose up -d --build</code> from the terminal.</p>'
           : ''
       }
-      ${renderRollbackSection(p)}
+      ${renderContainerActions(p)}
+      ${p.git ? renderRollbackSection(p) : ''}
       ${hint.length ? `<p class="git-line">${hint.join(' · ')}</p>` : ''}
       ${log ? renderLog(log) : ''}
   `;
@@ -283,6 +325,12 @@ function render() {
         ? `<h3 class="section-title">Dismissed (${dismissed.length})</h3>${dismissed.map(renderCard).join('')}`
         : '')
     : '<p class="empty">No projects found under the configured root.</p>';
+
+  if (state.scrollLogsFor) {
+    const el = document.querySelector(`.card[data-project="${CSS.escape(state.scrollLogsFor)}"] [data-role="container-logs"]`);
+    if (el) el.scrollTop = el.scrollHeight;
+    state.scrollLogsFor = null;
+  }
 }
 
 function appendLogLine(name, line) {
@@ -373,6 +421,47 @@ async function onClick(e) {
     try {
       await fetchJSON(`/api/projects/${encodeURIComponent(name)}/${action}`, { method: 'POST' });
       state.expanded.delete(name);
+      await refresh();
+    } catch (err) {
+      alert(err.message);
+    }
+    return;
+  }
+  if (action === 'close-logs') {
+    state.containerLogs.delete(name);
+    render();
+    return;
+  }
+  if (action === 'logs') {
+    const service = btn.dataset.service;
+    try {
+      const qs = service ? `?service=${encodeURIComponent(service)}` : '';
+      const { text } = await fetchJSON(`/api/projects/${encodeURIComponent(name)}/logs${qs}`);
+      state.containerLogs.set(name, { service: service || null, text });
+      state.scrollLogsFor = name;
+      render();
+    } catch (err) {
+      alert(err.message);
+    }
+    return;
+  }
+  if (action === 'container-op') {
+    const { op, service } = btn.dataset;
+    const target = service || 'all services in this project';
+    const prompts = {
+      stop: `Stop ${target}?`,
+      restart: service ? '' : `Restart ${target}?`,
+    };
+    const selfRestart = op === 'restart' && state.projects.get(name)?.isSelf && state.self.detected;
+    if (selfRestart && !confirm('Restart the manager itself? The dashboard will be unavailable for a short while.')) return;
+    if (!selfRestart && prompts[op] && !confirm(prompts[op])) return;
+    try {
+      await fetchJSON(`/api/projects/${encodeURIComponent(name)}/containers/${op}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ service: service || undefined }),
+      });
+      attachStream(name, { restartOnSuccess: selfRestart });
       await refresh();
     } catch (err) {
       alert(err.message);

@@ -74,6 +74,7 @@ Each project entry provides actionable controls to manage deployment states:
   * Picking one checks out that commit (requires a clean working tree) and puts the repo in **detached HEAD**; the dashboard reflects this immediately. Rollback can optionally chain straight into a rebuild, same as the pull-first toggle.
   * A **"Return to latest"** action is shown whenever HEAD is detached: runs `git checkout <branch>` against the remote's default branch (resolved via `git symbolic-ref refs/remotes/origin/HEAD`, so it works correctly even while detached) to reattach, after which normal pull/fetch resume working.
   * **Known limitation:** rollback only reaches as far back as the local clone's history. A shallow clone (`--depth`) won't have older commits available; the spec assumes full clones.
+* **Container controls:** Start (`docker compose up -d`, no build), Stop and Restart for the whole project or a single service, plus a Logs viewer (`docker compose logs --tail`, last 200 lines, refreshable). These run as ordinary operations (same lock, streamed output). The service list includes stopped containers (`ps -a`). The manager's own project can't be stopped from itself, and its restart goes through the detached helper (see Self-awareness).
 * **Concurrency control:** Only one operation (fetch, pull, rebuild, or checkout) may run per project at a time. A second request for the same project while one is in-flight is rejected (HTTP 409) and the UI disables that project's buttons for the duration, driven by the SSE stream's completion event. Operations on different projects may run concurrently.
 * **Timeouts:** Each operation has a server-side timeout (default 10 minutes, configurable) after which it's killed and reported as failed.
 
@@ -97,6 +98,8 @@ Each project entry provides actionable controls to manage deployment states:
 * `GET /api/self` — `{ detected, project, bootId }`.
 * `POST /api/self/check` — fetch the manager's own repo; `{ available, ahead, behind }`.
 * `POST /api/self/update` — pull, then self-restart; `202` + operation id (stream via the project's `/stream`).
+* `POST /api/projects/:name/containers/:action` — `action` is `start|stop|restart`; body `{ service?: string }`.
+* `GET /api/projects/:name/logs` — query `service?`, `tail?`; `{ service, text }`.
 * `GET /api/projects/:name/stream` — SSE stream of the current/most recent operation's output and status.
 
 ---

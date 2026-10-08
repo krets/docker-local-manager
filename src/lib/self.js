@@ -60,9 +60,9 @@ export async function getSelfContainer() {
  * that outlives us and performs the rebuild; `docker run -d` returns at once,
  * so the operation completes cleanly and the dashboard takes over from there.
  */
-function selfRestartStep(project, container) {
+function selfComposeStep(project, container, label, composeArgs) {
   return {
-    label: 'restart manager (detached helper container)',
+    label,
     command: 'docker',
     args: [
       'run', '-d', '--rm',
@@ -71,8 +71,8 @@ function selfRestartStep(project, container) {
       '--workdir', project.dir,
       '--entrypoint', 'sh',
       container.image,
-      '-c', 'sleep 3; exec docker compose -f "$1" up -d --build',
-      'sh', project.composeFile,
+      '-c', 'f="$1"; shift; sleep 3; exec docker compose -f "$f" "$@"',
+      'sh', project.composeFile, ...composeArgs,
     ],
     cwd: project.dir,
   };
@@ -82,7 +82,32 @@ function selfRestartStep(project, container) {
 export async function rebuildStepFor(project) {
   if (await isSelfProject(project)) {
     const container = await getSelfContainer();
-    if (container) return { step: selfRestartStep(project, container), selfRestart: true };
+    if (container) {
+      return {
+        step: selfComposeStep(project, container, 'restart manager (detached helper container)', ['up', '-d', '--build']),
+        selfRestart: true,
+      };
+    }
   }
   return { step: docker.rebuildStep(project.dir, project.composeFile), selfRestart: false };
+}
+
+/**
+ * start/stop/restart for a project or one service. The manager can't stop
+ * itself, and restarting itself has to go through the detached helper for
+ * the same reason a rebuild does.
+ */
+export async function containerStepFor(project, action, service) {
+  if (await isSelfProject(project)) {
+    const fail = (message) => Object.assign(new Error(message), { statusCode: 409 });
+    if (action === 'stop') throw fail("The manager can't stop itself; use the terminal");
+    if (action === 'start') throw fail('The manager is already running');
+    const container = await getSelfContainer();
+    if (!container) throw fail("Couldn't identify the manager's own container; restart it from the terminal");
+    return {
+      step: selfComposeStep(project, container, 'restart manager (detached helper container)', docker.containerArgs('restart', service)),
+      selfRestart: true,
+    };
+  }
+  return { step: docker.containerStep(project.dir, project.composeFile, action, service), selfRestart: false };
 }

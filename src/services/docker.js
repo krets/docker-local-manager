@@ -12,7 +12,7 @@ async function getImageCreated(image) {
 export async function getServiceStatus(dir, composeFile) {
   const { code, stdout } = await run(
     'docker',
-    [...composeBaseArgs(composeFile), 'ps', '--format', 'json'],
+    [...composeBaseArgs(composeFile), 'ps', '-a', '--format', 'json'],
     { cwd: dir },
   );
   if (code !== 0) return [];
@@ -49,3 +49,29 @@ export const rebuildStep = (dir, composeFile) => ({
   args: [...composeBaseArgs(composeFile), 'up', '-d', '--build'],
   cwd: dir,
 });
+
+export const CONTAINER_ACTIONS = ['start', 'stop', 'restart'];
+
+/** Compose arguments (after `compose -f <file>`) for a start/stop/restart of the project or one service. */
+export function containerArgs(action, service) {
+  const target = service ? [service] : [];
+  if (action === 'start') return ['up', '-d', ...target]; // no --build: just bring existing images up
+  return [action, ...target];
+}
+
+export const containerStep = (dir, composeFile, action, service) => ({
+  label: `docker compose ${containerArgs(action, service).join(' ')}`,
+  command: 'docker',
+  args: [...composeBaseArgs(composeFile), ...containerArgs(action, service)],
+  cwd: dir,
+});
+
+/** Recent combined output of the project's (or one service's) containers. */
+export async function getLogs(dir, composeFile, service, tail) {
+  const { output } = await run(
+    'docker',
+    [...composeBaseArgs(composeFile), 'logs', '--no-color', '--tail', String(tail), ...(service ? [service] : [])],
+    { cwd: dir },
+  );
+  return output;
+}

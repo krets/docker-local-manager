@@ -384,3 +384,31 @@ select {
   border-color: var(--accent);
   box-shadow: 0 0 0 1px var(--accent);
 }
+
+button.small {
+  padding: 0.2rem 0.5rem;
+  font-size: 0.75rem;
+}
+
+.table-wrap {
+  overflow-x: auto;
+}
+
+.row-actions {
+  white-space: nowrap;
+  text-align: right;
+}
+
+.container-logs-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 0.6rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.log[data-role="container-logs"] {
+  max-height: 20rem;
+  overflow: auto;
+}
